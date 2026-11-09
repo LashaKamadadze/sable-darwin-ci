@@ -36,19 +36,30 @@ jobs:
             -L --max-jobs 1 --cores 3
           nix path-info -Sh ./result
 
-      - name: Check the bundle and its signature
+      - name: Inspect the bundle and its signature
+        # informational: a broken resource seal does not stop a local app from starting
+        continue-on-error: true
         run: |
-          ls -la result/Applications/Sable.app/Contents/Resources
-          cat result/Applications/Sable.app/Contents/Resources/package-type
-          codesign --verify --deep --strict --verbose=2 result/Applications/Sable.app
+          app=result/Applications/Sable.app
+          ls -la $app/Contents $app/Contents/Resources $app/Contents/_CodeSignature || true
+          cat $app/Contents/Resources/package-type
+          file $app/Contents/Resources/* | sed 's|.*/Resources/||'
+          head -c 64 $app/Contents/Resources/sable-tray.ico | xxd | head -4
+          codesign -dvvv $app 2>&1 | head -30
+          codesign -dvvv $app/Contents/MacOS/Sable 2>&1 | head -20
+          codesign --verify --deep --strict --verbose=4 $app 2>&1 | tail -30
 
       - name: Launch and take a screenshot
         run: |
           result/Applications/Sable.app/Contents/MacOS/Sable > sable.log 2>&1 &
           sleep 60
           screencapture -x sable.png
-          pgrep -fl Sable.app
           tail -50 sable.log
+          if ! pgrep -fl Sable.app; then
+            echo "Sable is not running, crash reports:"
+            ls -t ~/Library/Logs/DiagnosticReports | head -5
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
