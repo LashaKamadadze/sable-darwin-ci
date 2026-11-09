@@ -36,30 +36,45 @@ jobs:
             -L --max-jobs 1 --cores 3
           nix path-info -Sh ./result
 
-      - name: Inspect the bundle and its signature
-        # informational: a broken resource seal does not stop a local app from starting
+      - name: Inspect the bundle
         continue-on-error: true
         run: |
           app=result/Applications/Sable.app
-          ls -la $app/Contents $app/Contents/Resources $app/Contents/_CodeSignature || true
-          cat $app/Contents/Resources/package-type
+          ls -la $app/Contents/Resources $app/Contents/_CodeSignature
           file $app/Contents/Resources/* | sed 's|.*/Resources/||'
-          head -c 64 $app/Contents/Resources/sable-tray.ico | xxd | head -4
-          codesign -dvvv $app 2>&1 | head -30
-          codesign -dvvv $app/Contents/MacOS/Sable 2>&1 | head -20
-          codesign --verify --deep --strict --verbose=4 $app 2>&1 | tail -30
+          codesign -dvvv $app 2>&1 | head -20
 
-      - name: Launch and take a screenshot
+      - name: Launch through bin/sable and take a screenshot
         run: |
-          result/Applications/Sable.app/Contents/MacOS/Sable > sable.log 2>&1 &
-          sleep 60
+          result/bin/sable > sable.log 2>&1 &
+          sleep 90
           screencapture -x sable.png
-          tail -50 sable.log
+          tail -60 sable.log
           if ! pgrep -fl Sable.app; then
-            echo "Sable is not running, crash reports:"
+            echo "::error::Sable is not running"
             ls -t ~/Library/Logs/DiagnosticReports | head -5
             exit 1
           fi
+
+      - name: Check the fixes
+        run: |
+          app=result/Applications/Sable.app
+          fail=0
+          echo "== bundle signature (Apple codesign, strict)"
+          codesign --verify --deep --strict --verbose=2 $app || { echo "::error::signature does not verify"; fail=1; }
+          echo "== Info.plist and resources are bound to the signature"
+          codesign -dvvv $app 2>&1 | grep -E 'Info.plist=|Sealed Resources=' | tee sig.txt
+          if grep -q 'not bound\|=none' sig.txt; then echo "::error::signature has no bundle seal"; fail=1; fi
+          echo "== package-type"
+          [ "$(cat $app/Contents/Resources/package-type)" = nix ] || { echo "::error::package-type missing"; fail=1; }
+          echo "== sable-tray.ico is the 18392-byte icon from the source"
+          size=$(stat -f %z $app/Contents/Resources/sable-tray.ico); echo "size $size"
+          [ "$size" = 18392 ] || { echo "::error::sable-tray.ico is $size bytes"; fail=1; }
+          echo "== the updater stays off"
+          if grep -q 'Checking for update' sable.log; then echo "::error::updater ran"; fail=1; else echo "no update check in the log"; fi
+          echo "== the Rust core reached a homeserver"
+          grep -q 'sign-in methods discovered' sable.log && echo ok || { echo "::error::no homeserver discovery in the log"; fail=1; }
+          exit $fail
 
       - uses: actions/upload-artifact@v4
         if: always()
