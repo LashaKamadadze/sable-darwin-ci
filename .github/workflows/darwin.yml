@@ -1,0 +1,60 @@
+name: sable-desktop on aarch64-darwin
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: branch or commit of LashaKamadadze/nixpkgs to build
+        default: sable-desktop-darwin
+
+jobs:
+  build:
+    # Apple Silicon runner, free for public repositories
+    runs-on: macos-latest
+    timeout-minutes: 340
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          # Nix does not need the Android SDK or the extra Xcode versions
+          sudo rm -rf ~/Library/Android /Users/runner/Library/Android || true
+          current=$(xcode-select -p | sed 's|/Contents/Developer||')
+          for x in /Applications/Xcode*.app; do
+            [ "$x" = "$current" ] || sudo rm -rf "$x"
+          done
+          df -h /
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          nix build "github:LashaKamadadze/nixpkgs/$REF#sable-desktop" \
+            -L --max-jobs 1 --cores 3
+          nix path-info -Sh ./result
+
+      - name: Check the bundle and its signature
+        run: |
+          ls -la result/Applications/Sable.app/Contents/Resources
+          cat result/Applications/Sable.app/Contents/Resources/package-type
+          codesign --verify --deep --strict --verbose=2 result/Applications/Sable.app
+
+      - name: Launch and take a screenshot
+        run: |
+          result/Applications/Sable.app/Contents/MacOS/Sable > sable.log 2>&1 &
+          sleep 60
+          screencapture -x sable.png
+          pgrep -fl Sable.app
+          tail -50 sable.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sable-darwin
+          path: |
+            sable.png
+            sable.log
+          if-no-files-found: ignore
